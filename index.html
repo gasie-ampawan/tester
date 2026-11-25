@@ -1006,6 +1006,7 @@
                         <input type="url" id="setting-sheet-url" placeholder="https://script.google.com/macros/s/xxxxxx/exec" class="w-full p-3 bg-gray-50 border border-gray-300 rounded-xl text-xs font-mono focus:ring-2 focus:ring-blue-500 outline-none">
                         <button type="button" onclick="window.saveSheetUrl()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold px-4 py-3 rounded-xl text-xs shrink-0 shadow-sm">บันทึกและซิงค์ทันที</button>
                         <button type="button" id="btn-test-gas" onclick="window.testGasConnection()" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-4 py-3 rounded-xl text-xs shrink-0 shadow-sm flex items-center gap-1.5"><span>🧪</span> ทดสอบการเชื่อมต่อ</button>
+                        <button type="button" id="btn-test-post" onclick="window.testGasPostWrite()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-4 py-3 rounded-xl text-xs shrink-0 shadow-sm flex items-center gap-1.5"><span>📤</span> ทดสอบส่ง POST & ตรวจชีต</button>
                     </div>
 
                     <!-- ตั้งค่ารอบความถี่ในการซิงค์อัตโนมัติ (Auto-Sync Interval) -->
@@ -1338,7 +1339,7 @@
         const IS_CLONED_APP = false; // จะถูกเปลี่ยนเป็น true อัตโนมัติในไฟล์สำเนาที่ดาวน์โหลดออกไป
         const EMBEDDED_INITIAL_LAYOUTS = null; // จะถูกฝังผังลานจอดที่เลือกเมื่อกดทำสำเนาแอป
         const APP_STORAGE_PREFIX = 'aspire_erawan_b';
-        const ORIGINAL_SHEET_URL = 'https://script.google.com/macros/s/AKfycbyF7ZXr5o1yC2ZEnktutcbjV8yQAJ3RMq8QRx2pL7viDKjqukt1tBru6CLIduKA6RWuBQ/exec';
+        const ORIGINAL_SHEET_URL = 'https://script.google.com/macros/s/AKfycbzwBGEsoWGLGXKxxDMWXOBKIT3cj2wlnHMjhSpmwdqEuPMZEMlInKh7xp3YCvQNf3Z_/exec';
 
         function sk(name) { return `${APP_STORAGE_PREFIX}_${name}`; }
 
@@ -4222,6 +4223,102 @@
         };
 
         
+        
+        window.testGasPostWrite = async function() {
+            const inputEl = document.getElementById('setting-sheet-url');
+            const boxEl = document.getElementById('gas-test-result-box');
+            const btnEl = document.getElementById('btn-test-post');
+            const targetUrl = (inputEl?.value || googleSheetUrl || '').trim();
+
+            if (!boxEl) return;
+            boxEl.classList.remove('hidden');
+
+            if (!targetUrl || !/^https:\/\/script\.google\.com\/macros\/s\/.+\/exec$/i.test(targetUrl)) {
+                boxEl.className = 'rounded-xl border p-3 text-xs space-y-1 font-mono bg-red-50 border-red-300 text-red-900';
+                boxEl.innerHTML = '<div><b>❌ รูปแบบ URL ไม่ถูกต้อง</b></div><div>ต้องเป็น Web App URL ของ Google Apps Script ที่ลงท้ายด้วย /exec</div>';
+                return;
+            }
+
+            const startTime = performance.now();
+            const probeId = 'probe-' + Date.now();
+            if (btnEl) {
+                btnEl.disabled = true;
+                btnEl.innerHTML = '<span>⏳</span> กำลังทดสอบเขียน...';
+            }
+            boxEl.className = 'rounded-xl border p-3 text-xs space-y-1 font-mono bg-blue-50 border-blue-200 text-blue-900';
+            boxEl.innerHTML = '<div>🔄 ขั้นตอนที่ 1/2: กำลังส่งคำขอทดสอบเขียนข้อมูลแบบ POST ไปยัง Google Apps Script...</div>';
+
+            try {
+                const statePayload = buildFullStatePayload();
+                statePayload._postProbe = { probeId, sentAt: new Date().toISOString(), client: APP_STORAGE_PREFIX };
+
+                await fetch(targetUrl, {
+                    method: 'POST',
+                    mode: 'no-cors',
+                    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                    body: JSON.stringify({
+                        action: 'testPostWrite',
+                        clientId: APP_STORAGE_PREFIX,
+                        state: statePayload
+                    })
+                });
+
+                boxEl.innerHTML += '<div>🔄 ขั้นตอนที่ 2/2: รอ 1.5 วินาที แล้วดึงข้อมูลจากชีต (doGet) เพื่อยืนยันการเขียน...</div>';
+                await new Promise(r => setTimeout(r, 1500));
+
+                const verifyRes = await fetch(`${targetUrl}?action=getState&verify=${encodeURIComponent(probeId)}&t=${Date.now()}`, {
+                    method: 'GET',
+                    cache: 'no-store'
+                });
+                const elapsedMs = Math.round(performance.now() - startTime);
+                const verifyJson = await verifyRes.json();
+
+                if (!verifyRes.ok || !verifyJson || verifyJson.ok === false) {
+                    throw new Error((verifyJson && verifyJson.error) ? verifyJson.error : `HTTP ${verifyRes.status}`);
+                }
+
+                const remoteState = verifyJson.state || {};
+                const remoteProbeId = remoteState._postProbe && remoteState._postProbe.probeId ? remoteState._postProbe.probeId : '';
+                const matched = remoteProbeId === probeId;
+                const remoteUpdatedAt = remoteState.updatedAt || '-';
+                const pkCount = Array.isArray(remoteState.parkings) ? remoteState.parkings.length : 0;
+                const stkCount = Array.isArray(remoteState.stickerRecords) ? remoteState.stickerRecords.length : 0;
+                const feeCount = Array.isArray(remoteState.feeRecords) ? remoteState.feeRecords.length : 0;
+                const qrCount = Array.isArray(remoteState.qrDatabase) ? remoteState.qrDatabase.length : 0;
+
+                if (matched) {
+                    boxEl.className = 'rounded-xl border p-3 text-xs space-y-1 font-mono bg-emerald-50 border-emerald-300 text-emerald-950';
+                    boxEl.innerHTML = `
+                        <div><b>✅ ทดสอบส่ง POST และยืนยันการเขียนลง Google Sheets สำเร็จ (${elapsedMs} ms)</b></div>
+                        <div>• Probe ID ตรงกัน: <b>${esc(probeId)}</b></div>
+                        <div>• เวลาอัปเดตบนชีต: <b>${esc(remoteUpdatedAt)}</b></div>
+                        <div>• ยอดข้อมูลบนชีต: รถจอด <b>${pkCount}</b> | สติกเกอร์ <b>${stkCount}</b> | ค่าส่วนกลาง <b>${feeCount}</b> | QR <b>${qrCount}</b></div>
+                    `;
+                    showToast(`ยืนยันการเขียนลง Google Sheets สำเร็จ (${elapsedMs} ms)`);
+                } else {
+                    boxEl.className = 'rounded-xl border p-3 text-xs space-y-1 font-mono bg-amber-50 border-amber-300 text-amber-950';
+                    boxEl.innerHTML = `
+                        <div><b>⚠️ ส่ง POST ไปแล้ว แต่ยังไม่พบ Probe ID ล่าสุดในชีต (${elapsedMs} ms)</b></div>
+                        <div>• คาดหวัง: <b>${esc(probeId)}</b> | ที่อ่านได้จากชีต: <b>${esc(remoteProbeId || 'ไม่พบ')}</b></div>
+                        <div>• ตรวจสอบว่า Web App ใน Apps Script ชี้ไปที่ชีตเดียวกันและ Deploy เป็น <b>New version</b> แล้วหรือยัง</div>
+                    `;
+                }
+            } catch (err) {
+                const elapsedMs = Math.round(performance.now() - startTime);
+                boxEl.className = 'rounded-xl border p-3 text-xs space-y-1 font-mono bg-red-50 border-red-300 text-red-950';
+                boxEl.innerHTML = `
+                    <div><b>❌ ทดสอบส่ง POST ไม่สำเร็จ (${elapsedMs} ms)</b></div>
+                    <div>• รายละเอียด: ${esc(err && err.message ? err.message : String(err))}</div>
+                    <div>• ตรวจสอบสิทธิ์ <b>Who has access: Anyone</b> และการ Deploy <b>New version</b> ใน Google Apps Script</div>
+                `;
+            } finally {
+                if (btnEl) {
+                    btnEl.disabled = false;
+                    btnEl.innerHTML = '<span>📤</span> ทดสอบส่ง POST & ตรวจชีต';
+                }
+            }
+        };
+
         window.testGasConnection = async function() {
             const inputEl = document.getElementById('setting-sheet-url');
             const boxEl = document.getElementById('gas-test-result-box');

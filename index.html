@@ -1005,9 +1005,11 @@
                     <div class="flex flex-col sm:flex-row gap-2">
                         <input type="url" id="setting-sheet-url" placeholder="https://script.google.com/macros/s/xxxxxx/exec" class="w-full p-3 bg-gray-50 border border-gray-300 rounded-xl text-xs font-mono focus:ring-2 focus:ring-blue-500 outline-none">
                         <button type="button" onclick="window.saveSheetUrl()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold px-4 py-3 rounded-xl text-xs shrink-0 shadow-sm">บันทึกและซิงค์ทันที</button>
+                        <button type="button" id="btn-test-gas" onclick="window.testGasConnection()" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-4 py-3 rounded-xl text-xs shrink-0 shadow-sm flex items-center gap-1.5"><span>🧪</span> ทดสอบการเชื่อมต่อ</button>
                     </div>
 
                     <!-- ตั้งค่ารอบความถี่ในการซิงค์อัตโนมัติ (Auto-Sync Interval) -->
+                    <div id="gas-test-result-box" class="hidden rounded-xl border p-3 text-xs space-y-1 font-mono bg-slate-50 border-slate-200 text-slate-800"></div>
                     <div class="bg-blue-50/70 border border-blue-200 rounded-xl p-3.5 space-y-2 text-xs">
                         <div class="flex flex-wrap justify-between items-center gap-2">
                             <div>
@@ -1336,7 +1338,7 @@
         const IS_CLONED_APP = false; // จะถูกเปลี่ยนเป็น true อัตโนมัติในไฟล์สำเนาที่ดาวน์โหลดออกไป
         const EMBEDDED_INITIAL_LAYOUTS = null; // จะถูกฝังผังลานจอดที่เลือกเมื่อกดทำสำเนาแอป
         const APP_STORAGE_PREFIX = 'aspire_erawan_b';
-        const ORIGINAL_SHEET_URL = 'https://script.google.com/macros/s/AKfycbzwBGEsoWGLGXKxxDMWXOBKIT3cj2wlnHMjhSpmwdqEuPMZEMlInKh7xp3YCvQNf3Z_/exec';
+        const ORIGINAL_SHEET_URL = 'https://script.google.com/macros/s/AKfycbyF7ZXr5o1yC2ZEnktutcbjV8yQAJ3RMq8QRx2pL7viDKjqukt1tBru6CLIduKA6RWuBQ/exec';
 
         function sk(name) { return `${APP_STORAGE_PREFIX}_${name}`; }
 
@@ -4217,6 +4219,78 @@
             initHouseNumberOptions();
             autoSaveData('saveHouseConfig');
             showToast('บันทึกการตั้งค่าช่วงบ้านเลขที่เรียบร้อย!');
+        };
+
+        
+        window.testGasConnection = async function() {
+            const inputEl = document.getElementById('setting-sheet-url');
+            const boxEl = document.getElementById('gas-test-result-box');
+            const btnEl = document.getElementById('btn-test-gas');
+            const targetUrl = (inputEl?.value || googleSheetUrl || '').trim();
+
+            if (!boxEl) return;
+            boxEl.classList.remove('hidden');
+
+            if (!targetUrl || !/^https:\/\/script\.google\.com\/macros\/s\/.+\/exec$/i.test(targetUrl)) {
+                boxEl.className = 'rounded-xl border p-3 text-xs space-y-1 font-mono bg-red-50 border-red-300 text-red-900';
+                boxEl.innerHTML = '<div><b>❌ รูปแบบ URL ไม่ถูกต้อง</b></div><div>ต้องเป็น Web App URL ของ Google Apps Script ที่ลงท้ายด้วย /exec</div>';
+                return;
+            }
+
+            const startTime = performance.now();
+            if (btnEl) {
+                btnEl.disabled = true;
+                btnEl.innerHTML = '<span>⏳</span> กำลังทดสอบ...';
+            }
+            boxEl.className = 'rounded-xl border p-3 text-xs space-y-1 font-mono bg-blue-50 border-blue-200 text-blue-900';
+            boxEl.innerHTML = '<div>🔄 กำลังส่งคำขอทดสอบไปยัง Google Apps Script (doGet)...</div>';
+
+            try {
+                const res = await fetch(`${targetUrl}?action=getState&ping=1&t=${Date.now()}`, {
+                    method: 'GET',
+                    cache: 'no-store'
+                });
+                const elapsedMs = Math.round(performance.now() - startTime);
+                const contentType = res.headers.get('content-type') || '';
+                const rawText = await res.text();
+
+                let parsed = null;
+                try {
+                    parsed = JSON.parse(rawText);
+                } catch (parseErr) {
+                    throw new Error(`ตอบกลับไม่ใช่ JSON (HTTP ${res.status}, Content-Type: ${contentType || 'unknown'}) — อาจยังไม่ได้ตั้งสิทธิ์ Anyone หรือ Deploy เป็น New version`);
+                }
+
+                if (!res.ok || (parsed && parsed.ok === false)) {
+                    throw new Error((parsed && parsed.error) ? parsed.error : `HTTP ${res.status}`);
+                }
+
+                const hasState = !!(parsed && parsed.state);
+                const verText = (parsed && parsed.version) ? parsed.version : 'ไม่ระบุ';
+                const updatedText = (parsed && parsed.state && parsed.state.updatedAt) ? parsed.state.updatedAt : 'ยังไม่มีข้อมูลในชีต';
+
+                boxEl.className = 'rounded-xl border p-3 text-xs space-y-1 font-mono bg-emerald-50 border-emerald-300 text-emerald-950';
+                boxEl.innerHTML = `
+                    <div><b>✅ เชื่อมต่อ Google Apps Script สำเร็จ (HTTP ${res.status})</b></div>
+                    <div>• เวลาตอบกลับ: <b>${elapsedMs} ms</b></div>
+                    <div>• เวอร์ชัน GAS: <b>${esc(verText)}</b> | มี State: <b>${hasState ? 'ใช่' : 'ยังว่าง'}</b></div>
+                    <div>• อัปเดตล่าสุดบนชีต: <b>${esc(updatedText)}</b></div>
+                `;
+                showToast(`เชื่อมต่อ GAS สำเร็จ (${elapsedMs} ms)`);
+            } catch (err) {
+                const elapsedMs = Math.round(performance.now() - startTime);
+                boxEl.className = 'rounded-xl border p-3 text-xs space-y-1 font-mono bg-red-50 border-red-300 text-red-950';
+                boxEl.innerHTML = `
+                    <div><b>❌ ทดสอบการเชื่อมต่อไม่สำเร็จ (${elapsedMs} ms)</b></div>
+                    <div>• รายละเอียด: ${esc(err && err.message ? err.message : String(err))}</div>
+                    <div>• ตรวจสอบ: Deploy เป็น <b>New version</b> และตั้งค่า <b>Who has access: Anyone</b> แล้วหรือยัง</div>
+                `;
+            } finally {
+                if (btnEl) {
+                    btnEl.disabled = false;
+                    btnEl.innerHTML = '<span>🧪</span> ทดสอบการเชื่อมต่อ';
+                }
+            }
         };
 
         window.saveSheetUrl = function() {
